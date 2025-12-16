@@ -1,12 +1,11 @@
 /**
  * Upload Component
- * Drag-and-drop zone for image uploads
- * Turkish UI
+ * Modern drag-and-drop zone for image uploads
  */
 
 import { useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Upload as UploadIcon, Image as ImageIcon } from 'lucide-react';
+import { Upload as UploadIcon, Image as ImageIcon, Sparkles } from 'lucide-react';
 import { useImageStore } from '../store/imageStore';
 import { Card } from './ui/card';
 import { cn } from '../lib/utils';
@@ -39,44 +38,63 @@ export function Upload() {
     <Card
       {...getRootProps()}
       className={cn(
-        'border-2 border-dashed cursor-pointer transition-all hover:border-primary/50 hover:bg-accent/50',
-        isDragActive && 'border-primary bg-accent/50 scale-[1.02]'
+        'relative overflow-hidden border-2 border-dashed border-gray-200 cursor-pointer transition-all duration-300',
+        'hover:border-primary/60 hover:bg-primary/5 hover:shadow-lg hover:shadow-primary/5',
+        isDragActive && 'border-primary bg-primary/10 shadow-xl shadow-primary/10 scale-[1.01]'
       )}
     >
-      <div className="flex flex-col items-center justify-center p-12 text-center">
+      {/* Subtle Background Pattern */}
+      <div className="absolute inset-0 opacity-[0.02]" style={{
+        backgroundImage: 'radial-gradient(circle, currentColor 1px, transparent 1px)',
+        backgroundSize: '24px 24px'
+      }} />
+
+      <div className="relative flex flex-col items-center justify-center p-16 text-center">
         <input {...getInputProps()} />
         
-        <div className="mb-4 rounded-full bg-primary/10 p-6">
+        {/* Icon */}
+        <div className={cn(
+          "mb-6 rounded-2xl p-6 transition-all duration-300",
+          isDragActive 
+            ? "bg-gradient-to-br from-primary to-primary/80 shadow-2xl shadow-primary/30" 
+            : "bg-gradient-to-br from-gray-50 to-gray-100 hover:from-primary/10 hover:to-primary/5"
+        )}>
           {isDragActive ? (
-            <ImageIcon className="h-12 w-12 text-primary animate-pulse" />
+            <div className="relative">
+              <ImageIcon className="h-10 w-10 text-white animate-bounce" />
+              <Sparkles className="absolute -top-1 -right-1 h-4 w-4 text-white animate-pulse" />
+            </div>
           ) : (
-            <UploadIcon className="h-12 w-12 text-primary" />
+            <UploadIcon className="h-10 w-10 text-gray-600" />
           )}
         </div>
 
-        <h3 className="text-xl font-semibold mb-2">
-          {isDragActive ? 'Dosyaları bırakın' : 'Dosyaları buraya sürükleyin'}
+        {/* Text */}
+        <h3 className="text-xl font-semibold text-gray-900 mb-2">
+          {isDragActive ? 'Dosyaları bırakın' : 'Görselleri sürükleyip bırakın'}
         </h3>
         
-        <p className="text-muted-foreground mb-4">
-          veya seçmek için tıklayın
+        <p className="text-sm text-gray-500 mb-6">
+          veya <span className="text-primary font-medium">buraya tıklayarak</span> seçin
         </p>
 
-        <div className="flex flex-wrap gap-2 justify-center">
-          <span className="px-3 py-1 rounded-full bg-secondary text-secondary-foreground text-xs font-medium">
-            JPG
-          </span>
-          <span className="px-3 py-1 rounded-full bg-secondary text-secondary-foreground text-xs font-medium">
-            PNG
-          </span>
-          <span className="px-3 py-1 rounded-full bg-secondary text-secondary-foreground text-xs font-medium">
-            WEBP
-          </span>
+        {/* Format Badges */}
+        <div className="flex flex-wrap gap-2 justify-center mb-6">
+          {['JPG', 'PNG', 'WEBP'].map((format) => (
+            <span 
+              key={format}
+              className="px-4 py-1.5 rounded-lg bg-white border border-gray-200 text-gray-700 text-xs font-medium shadow-sm"
+            >
+              {format}
+            </span>
+          ))}
         </div>
 
-        <p className="text-xs text-muted-foreground mt-4">
-          Birden fazla dosya seçebilirsiniz
-        </p>
+        {/* Additional Info */}
+        <div className="flex items-center gap-2 text-xs text-gray-400">
+          <Sparkles className="h-3.5 w-3.5" />
+          <span>Birden fazla dosya yükleyebilirsiniz</span>
+        </div>
       </div>
     </Card>
   );
