@@ -71,6 +71,7 @@ export function ImageRow({ image }: ImageRowProps) {
           'applying-bg': 'Beyaz arka plan ekleniyor',
           'resizing': 'Boyutlandırılıyor',
           'adding-watermark': 'Filigran ekleniyor',
+          'finalizing': 'Tamamlanıyor',
         };
         const stage = image.processingStage ? stageText[image.processingStage] : 'İşleniyor';
         

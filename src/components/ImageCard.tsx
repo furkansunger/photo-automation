@@ -83,6 +83,7 @@ export function ImageCard({ image, onPreviewClick }: ImageCardProps) {
           'applying-bg': 'Beyaz arka plan ekleniyor',
           'resizing': 'Boyutlandırılıyor',
           'adding-watermark': 'Filigran ekleniyor',
+          'finalizing': 'Tamamlanıyor',
         };
         const currentStage = image.processingStage 
           ? stageText[image.processingStage] 
