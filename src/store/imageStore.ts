@@ -4,7 +4,7 @@
  */
 
 import { create } from 'zustand';
-import type { ImageObject } from '../types/image';
+import type { ImageObject, ResizeMode } from '../types/image';
 import { aiService } from '../services/aiService';
 import { imageProcessor } from '../services/imageProcessor';
 
@@ -18,11 +18,22 @@ interface ImageStore {
   initializeModel: () => Promise<void>;
   addImages: (files: File[]) => void;
   removeImage: (id: string) => void;
-  updateImageDimensions: (id: string, width: number, height: number) => void;
+  updateImageDimensions: (
+    id: string,
+    width: number,
+    height: number,
+    resizeMode?: ResizeMode,
+    maintainAspectRatio?: boolean
+  ) => void;
   updateImageName: (id: string, newName: string) => void;
   updateImageWatermark: (id: string, watermark: { file: File; scale: number } | null) => void;
   setGlobalWatermark: (watermark: { file: File; scale: number } | null) => void;
-  updateBulkDimensions: (width: number, height: number) => void;
+  updateBulkDimensions: (
+    width: number,
+    height: number,
+    resizeMode?: ResizeMode,
+    maintainAspectRatio?: boolean
+  ) => void;
   applyWatermarkToAll: () => void;
   processImage: (id: string) => Promise<void>;
   reprocessImage: (id: string) => Promise<void>;
@@ -57,6 +68,8 @@ export const useImageStore = create<ImageStore>((set, get) => ({
         id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         originalFile: file,
         processedBlob: null,
+        imglyBlob: null,
+        photoroomBlob: null,
         status: 'idle',
         dimensions: { width: 0, height: 0 }, // Will be set during processing
         newName: originalName,
@@ -104,17 +117,30 @@ export const useImageStore = create<ImageStore>((set, get) => ({
   },
 
   // Update dimensions for a specific image
-  updateImageDimensions: (id: string, width: number, height: number) => {
+  // NOTE: This ONLY updates the dimension settings, does NOT trigger reprocessing
+  // Resize will be applied during download/export
+  updateImageDimensions: (
+    id: string,
+    width: number,
+    height: number,
+    resizeMode?: ResizeMode,
+    maintainAspectRatio?: boolean
+  ) => {
     set((state) => ({
       images: state.images.map((img) =>
         img.id === id
-          ? { ...img, dimensions: { width, height } }
+          ? {
+              ...img,
+              dimensions: { width, height },
+              resizeMode: resizeMode ?? img.resizeMode ?? 'fit',
+              maintainAspectRatio: maintainAspectRatio ?? img.maintainAspectRatio ?? true,
+            }
           : img
       ),
     }));
 
-    // Trigger reprocessing with new dimensions
-    get().reprocessImage(id);
+    // NO reprocessing - dimensions are applied only on export
+    console.log(`[Store] Dimensions updated for image ${id}: ${width}x${height} (${resizeMode || 'fit'})`);
   },
 
   // Update filename for a specific image
@@ -163,22 +189,29 @@ export const useImageStore = create<ImageStore>((set, get) => ({
   },
 
   // Update dimensions for all images
-  updateBulkDimensions: (width: number, height: number) => {
+  // NOTE: This ONLY updates dimension settings, does NOT trigger reprocessing
+  // Resize will be applied during download/export
+  updateBulkDimensions: (
+    width: number,
+    height: number,
+    resizeMode?: ResizeMode,
+    maintainAspectRatio?: boolean
+  ) => {
     set((state) => ({
       images: state.images.map((img) => ({
         ...img,
         dimensions: { width, height },
+        resizeMode: resizeMode ?? img.resizeMode ?? 'fit',
+        maintainAspectRatio: maintainAspectRatio ?? img.maintainAspectRatio ?? true,
       })),
     }));
 
-    // Reprocess all images with new dimensions
-    const { images } = get();
-    images.forEach((img) => {
-      get().reprocessImage(img.id);
-    });
+    // NO reprocessing - dimensions are applied only on export
+    console.log(`[Store] Bulk dimensions updated: ${width}x${height} (${resizeMode || 'fit'})`);
   },
 
-  // Process a single image (background removal + white background + resize)
+  // Process a single image - DUAL PROCESSING MODE
+  // Runs both imgly and Photoroom in parallel for comparison
   processImage: async (id: string) => {
     const image = get().images.find((img) => img.id === id);
     if (!image) return;
@@ -186,7 +219,7 @@ export const useImageStore = create<ImageStore>((set, get) => ({
     // Update status to processing
     set((state) => ({
       images: state.images.map((img) =>
-        img.id === id ? { ...img, status: 'processing' as const, progress: 0 } : img
+        img.id === id ? { ...img, status: 'processing' as const, imglyProgress: 0, photoroomProgress: 0 } : img
       ),
     }));
 
@@ -194,7 +227,7 @@ export const useImageStore = create<ImageStore>((set, get) => ({
       // Step 1: Get original dimensions
       set((state) => ({
         images: state.images.map((img) =>
-          img.id === id ? { ...img, processingStage: 'removing-bg' as const, progress: 10 } : img
+          img.id === id ? { ...img, processingStage: 'removing-bg' as const, imglyProgress: 5, photoroomProgress: 5 } : img
         ),
       }));
 
@@ -202,50 +235,101 @@ export const useImageStore = create<ImageStore>((set, get) => ({
       
       set((state) => ({
         images: state.images.map((img) =>
-          img.id === id ? { ...img, dimensions, progress: 20 } : img
+          img.id === id ? { ...img, dimensions, imglyProgress: 10, photoroomProgress: 10 } : img
         ),
       }));
 
-      // Step 2: Remove background using AI
-      set((state) => ({
-        images: state.images.map((img) =>
-          img.id === id ? { ...img, processingStage: 'removing-bg' as const, progress: 30 } : img
-        ),
-      }));
-
-      const transparentBlob = await aiService.removeBackground(image.originalFile);
-
-      set((state) => ({
-        images: state.images.map((img) =>
-          img.id === id ? { ...img, progress: 60 } : img
-        ),
-      }));
-
-      // Step 3: Apply white background
-      set((state) => ({
-        images: state.images.map((img) =>
-          img.id === id ? { ...img, processingStage: 'applying-bg' as const, progress: 70 } : img
-        ),
-      }));
-
-      // Step 4: Resize and add watermark
-      set((state) => ({
-        images: state.images.map((img) =>
-          img.id === id ? { ...img, processingStage: image.watermark ? 'adding-watermark' as const : 'resizing' as const, progress: 80 } : img
-        ),
-      }));
-
-      const processedBlob = await imageProcessor.processImage(
-        transparentBlob,
-        dimensions,
-        image.watermark
+      // Step 2: DUAL PROCESSING - Remove background using both providers
+      console.log(`[Store] Starting dual processing for image ${id}`);
+      
+      const dualResult = await aiService.removeBackgroundDual(
+        image.originalFile,
+        // imgly progress callback
+        (progress) => {
+          set((state) => ({
+            images: state.images.map((img) =>
+              img.id === id ? { ...img, imglyProgress: 10 + Math.round(progress * 0.4) } : img
+            ),
+          }));
+        },
+        // Photoroom progress callback
+        (progress) => {
+          set((state) => ({
+            images: state.images.map((img) =>
+              img.id === id ? { ...img, photoroomProgress: 10 + Math.round(progress * 0.4) } : img
+            ),
+          }));
+        }
       );
 
-      // Update with processed blob
+      console.log(`[Store] Background removal complete:`, {
+        imgly: !!dualResult.imglyBlob,
+        photoroom: !!dualResult.photoroomBlob,
+      });
+
+      // Step 3: Add white background to both results
+      set((state) => ({
+        images: state.images.map((img) =>
+          img.id === id ? { 
+            ...img, 
+            processingStage: 'applying-bg' as const,
+            imglyProgress: 50, 
+            photoroomProgress: 50 
+          } : img
+        ),
+      }));
+
+      let imglyWithBg: Blob | null = null;
+      let photoroomWithBg: Blob | null = null;
+
+      if (dualResult.imglyBlob) {
+        imglyWithBg = await imageProcessor.applyWhiteBackground(dualResult.imglyBlob);
+      }
+      if (dualResult.photoroomBlob) {
+        photoroomWithBg = await imageProcessor.applyWhiteBackground(dualResult.photoroomBlob);
+      }
+
+      set((state) => ({
+        images: state.images.map((img) =>
+          img.id === id ? { 
+            ...img, 
+            imglyProgress: 70, 
+            photoroomProgress: 70 
+          } : img
+        ),
+      }));
+
+      // Step 4: Store ORIGINAL SIZE results (no resize yet)
+      // Resize will be applied on-demand during download/export
+      set((state) => ({
+        images: state.images.map((img) =>
+          img.id === id ? { 
+            ...img, 
+            processingStage: 'finalizing' as const,
+            imglyBlob: imglyWithBg,
+            photoroomBlob: photoroomWithBg,
+            imglyProgress: 90, 
+            photoroomProgress: 90 
+          } : img
+        ),
+      }));
+
+      console.log(`[Store] Dual processing complete (stored at original size):`, {
+        imgly: !!imglyWithBg,
+        photoroom: !!photoroomWithBg,
+      });
+
+      // Mark as done
       set((state) => ({
         images: state.images.map((img) =>
           img.id === id
-            ? { ...img, processedBlob, status: 'done' as const, progress: 100, processingStage: undefined }
+            ? { 
+                ...img, 
+                status: 'done' as const, 
+                imglyProgress: 100, 
+                photoroomProgress: 100, 
+                processingStage: undefined 
+              }
             : img
         ),
       }));
@@ -264,52 +348,91 @@ export const useImageStore = create<ImageStore>((set, get) => ({
   },
 
   // Reprocess an image with updated dimensions (skip background removal)
+  // Reprocess an image with updated dimensions - DUAL PROCESSING MODE
   reprocessImage: async (id: string) => {
     const image = get().images.find((img) => img.id === id);
-    if (!image || !image.processedBlob) return;
+    if (!image) return;
 
     // Update status to processing
     set((state) => ({
       images: state.images.map((img) =>
-        img.id === id ? { ...img, status: 'processing' as const, progress: 0, processingStage: 'removing-bg' as const } : img
+        img.id === id ? { ...img, status: 'processing' as const, imglyProgress: 0, photoroomProgress: 0 } : img
       ),
     }));
 
     try {
-      // We need to re-remove background since we don't store the transparent version
-      // For optimization, we could cache the transparent blob in the future
+      // Start background removal directly
       set((state) => ({
         images: state.images.map((img) =>
-          img.id === id ? { ...img, progress: 30 } : img
+          img.id === id ? { ...img, processingStage: 'removing-bg' as const, imglyProgress: 10, photoroomProgress: 10 } : img
         ),
       }));
 
-      const transparentBlob = await aiService.removeBackground(image.originalFile);
-
-      set((state) => ({
-        images: state.images.map((img) =>
-          img.id === id ? { ...img, progress: 60, processingStage: 'applying-bg' as const } : img
-        ),
-      }));
-
-      // Apply white background, resize, and add watermark with new settings
-      set((state) => ({
-        images: state.images.map((img) =>
-          img.id === id ? { ...img, progress: 80, processingStage: image.watermark ? 'adding-watermark' as const : 'resizing' as const } : img
-        ),
-      }));
-
-      const processedBlob = await imageProcessor.processImage(
-        transparentBlob,
-        image.dimensions,
-        image.watermark
+      // DUAL PROCESSING - Remove background using both providers
+      const dualResult = await aiService.removeBackgroundDual(
+        image.originalFile,
+        (progress) => {
+          set((state) => ({
+            images: state.images.map((img) =>
+              img.id === id ? { ...img, imglyProgress: 10 + Math.round(progress * 0.4) } : img
+            ),
+          }));
+        },
+        (progress) => {
+          set((state) => ({
+            images: state.images.map((img) =>
+              img.id === id ? { ...img, photoroomProgress: 10 + Math.round(progress * 0.4) } : img
+            ),
+          }));
+        }
       );
 
-      // Update with new processed blob
+      // Add white background
+      set((state) => ({
+        images: state.images.map((img) =>
+          img.id === id ? { 
+            ...img, 
+            processingStage: 'applying-bg' as const,
+            imglyProgress: 50, 
+            photoroomProgress: 50 
+          } : img
+        ),
+      }));
+
+      let imglyWithBg: Blob | null = null;
+      let photoroomWithBg: Blob | null = null;
+
+      if (dualResult.imglyBlob) {
+        imglyWithBg = await imageProcessor.applyWhiteBackground(dualResult.imglyBlob);
+      }
+      if (dualResult.photoroomBlob) {
+        photoroomWithBg = await imageProcessor.applyWhiteBackground(dualResult.photoroomBlob);
+      }
+
+      set((state) => ({
+        images: state.images.map((img) =>
+          img.id === id ? { 
+            ...img, 
+            imglyProgress: 70, 
+            photoroomProgress: 70 
+          } : img
+        ),
+      }));
+
+      // Store ORIGINAL SIZE results (no resize yet)
+      // Resize will be applied on-demand during download/export
       set((state) => ({
         images: state.images.map((img) =>
           img.id === id
-            ? { ...img, processedBlob, status: 'done' as const, progress: 100, processingStage: undefined }
+            ? { 
+                ...img, 
+                processingStage: 'finalizing' as const,
+                imglyBlob: imglyWithBg,
+                photoroomBlob: photoroomWithBg,
+                status: 'done' as const, 
+                imglyProgress: 100, 
+                photoroomProgress: 100, 
+              }
             : img
         ),
       }));

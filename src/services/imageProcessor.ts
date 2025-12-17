@@ -2,8 +2,14 @@
  * Image Processor Service
  * Handles canvas operations for:
  * 1. White background injection (replacing transparency)
- * 2. Image resizing
+ * 2. High-quality image resizing with aspect ratio control
+ * 3. Watermark application
  */
+
+import Pica from 'pica';
+import type { ResizeMode } from '../types/image';
+
+const pica = Pica();
 
 export interface ImageDimensions {
   width: number;
@@ -70,45 +76,151 @@ class ImageProcessor {
   }
 
   /**
-   * Resize an image to specified dimensions
+   * Calculate target dimensions based on resize mode and aspect ratio
+   */
+  private calculateTargetDimensions(
+    originalWidth: number,
+    originalHeight: number,
+    targetWidth: number,
+    targetHeight: number,
+    mode: ResizeMode = 'fit'
+  ): { width: number; height: number; offsetX: number; offsetY: number } {
+    const originalRatio = originalWidth / originalHeight;
+    const targetRatio = targetWidth / targetHeight;
+
+    let width = targetWidth;
+    let height = targetHeight;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (mode === 'stretch') {
+      // Stretch mode - use target dimensions as is (may distort)
+      return { width: targetWidth, height: targetHeight, offsetX: 0, offsetY: 0 };
+    }
+
+    if (mode === 'fit') {
+      // Fit mode - scale to fit within target dimensions, maintain aspect ratio
+      if (originalRatio > targetRatio) {
+        // Image is wider - fit to width
+        height = Math.round(targetWidth / originalRatio);
+        offsetY = Math.round((targetHeight - height) / 2);
+      } else {
+        // Image is taller - fit to height
+        width = Math.round(targetHeight * originalRatio);
+        offsetX = Math.round((targetWidth - width) / 2);
+      }
+    } else if (mode === 'fill') {
+      // Fill mode - scale to cover target dimensions, crop excess
+      if (originalRatio > targetRatio) {
+        // Image is wider - fit to height and crop sides
+        width = Math.round(targetHeight * originalRatio);
+        offsetX = Math.round((targetWidth - width) / 2);
+      } else {
+        // Image is taller - fit to width and crop top/bottom
+        height = Math.round(targetWidth / originalRatio);
+        offsetY = Math.round((targetHeight - height) / 2);
+      }
+    }
+
+    return { width, height, offsetX, offsetY };
+  }
+
+  /**
+   * HIGH-QUALITY RESIZE using Pica library (Lanczos3 algorithm)
+   * Supports aspect ratio preservation and different resize modes
    * @param imageBlob - Image blob to resize
    * @param dimensions - Target width and height
+   * @param mode - How to handle aspect ratio: 'fit', 'fill', or 'stretch'
    * @returns Resized image blob
    */
   public async resizeImage(
     imageBlob: Blob,
-    dimensions: ImageDimensions
+    dimensions: ImageDimensions,
+    mode: ResizeMode = 'fit'
   ): Promise<Blob> {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(imageBlob);
 
-      img.onload = () => {
+      img.onload = async () => {
         try {
-          // Create canvas with target dimensions
-          const canvas = document.createElement('canvas');
-          canvas.width = dimensions.width;
-          canvas.height = dimensions.height;
-          const ctx = canvas.getContext('2d');
+          const originalWidth = img.width;
+          const originalHeight = img.height;
 
-          if (!ctx) {
-            throw new Error('Canvas context oluşturulamadı');
+          // Calculate optimal dimensions based on mode
+          const calc = this.calculateTargetDimensions(
+            originalWidth,
+            originalHeight,
+            dimensions.width,
+            dimensions.height,
+            mode
+          );
+
+          // Create source canvas with original image
+          const sourceCanvas = document.createElement('canvas');
+          sourceCanvas.width = originalWidth;
+          sourceCanvas.height = originalHeight;
+          const sourceCtx = sourceCanvas.getContext('2d');
+
+          if (!sourceCtx) {
+            throw new Error('Source canvas context oluşturulamadı');
           }
 
-          // Enable image smoothing for better quality
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
+          sourceCtx.drawImage(img, 0, 0);
 
-          // Draw resized image
-          ctx.drawImage(img, 0, 0, dimensions.width, dimensions.height);
+          // Create target canvas
+          const targetCanvas = document.createElement('canvas');
+          targetCanvas.width = dimensions.width;
+          targetCanvas.height = dimensions.height;
+          const targetCtx = targetCanvas.getContext('2d');
+
+          if (!targetCtx) {
+            throw new Error('Target canvas context oluşturulamadı');
+          }
+
+          // Fill with white background first (for fit mode with letterboxing)
+          if (mode === 'fit' && (calc.offsetX > 0 || calc.offsetY > 0)) {
+            targetCtx.fillStyle = '#FFFFFF';
+            targetCtx.fillRect(0, 0, dimensions.width, dimensions.height);
+          }
+
+          // Use pica for high-quality resize
+          // First resize to calculated dimensions
+          const resizedCanvas = document.createElement('canvas');
+          resizedCanvas.width = calc.width;
+          resizedCanvas.height = calc.height;
+
+          await pica.resize(sourceCanvas, resizedCanvas, {
+            quality: 3, // 0-3, 3 is highest (Lanczos3)
+            unsharpAmount: 80, // Sharpening amount
+            unsharpRadius: 0.6,
+            unsharpThreshold: 2,
+          });
+
+          // Draw resized image onto target canvas with proper positioning
+          if (mode === 'fill') {
+            // For fill mode, we need to crop the center
+            const sourceX = Math.abs(calc.offsetX);
+            const sourceY = Math.abs(calc.offsetY);
+            targetCtx.drawImage(
+              resizedCanvas,
+              sourceX, sourceY,
+              dimensions.width, dimensions.height,
+              0, 0,
+              dimensions.width, dimensions.height
+            );
+          } else {
+            // For fit and stretch modes, draw with offset
+            targetCtx.drawImage(resizedCanvas, calc.offsetX, calc.offsetY);
+          }
 
           // Convert to Blob
-          canvas.toBlob(
+          targetCanvas.toBlob(
             (blob) => {
               URL.revokeObjectURL(url);
               if (blob) {
                 console.log(
-                  `[ImageProcessor] Image resized to ${dimensions.width}x${dimensions.height}`
+                  `[ImageProcessor] High-quality resize to ${dimensions.width}x${dimensions.height} (mode: ${mode})`
                 );
                 resolve(blob);
               } else {
@@ -116,7 +228,7 @@ class ImageProcessor {
               }
             },
             'image/jpeg',
-            0.95
+            0.95 // High quality
           );
         } catch (error) {
           URL.revokeObjectURL(url);
